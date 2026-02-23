@@ -12,7 +12,6 @@
         }
         h2 { margin: 15px 0; font-size: 1.2rem; }
         
-        /* 各画面のコンテナ */
         #startScreen, #resultScreen { padding: 20px; margin-top: 50px; }
         #resultScreen { display: none; }
 
@@ -34,8 +33,10 @@
             width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; 
             background: #6200EE; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px;
         }
-        button:active { background: #3700B3; }
         button:disabled { background: #555; cursor: not-allowed; }
+        
+        #startBtn { background: #2196F3; }
+        #startBtn:active { background: #1976D2; }
         
         #backBtn { background: #03DAC6; color: #000; margin-top: 30px; }
         #backBtn:active { background: #018786; }
@@ -97,11 +98,23 @@
 
     let firstQR = null;
     let secondQR = null;
+    
+    // Web Audio APIのコンテキスト (音を鳴らすための準備)
+    let audioCtx = null;
 
     async function startApp() {
         const startBtn = document.getElementById('startBtn');
         startBtn.disabled = true;
         startBtn.innerText = "準備中...";
+
+        // ユーザーアクション（ボタンクリック）時にAudioContextを初期化しないとiOSで音が鳴らない
+        if (!audioCtx) {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AudioContext();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
 
         await initEngines();
         const success = await startCamera();
@@ -114,6 +127,33 @@
             startBtn.disabled = false;
             startBtn.innerText = "📷 カメラを起動する";
         }
+    }
+
+    // 「ピピッ♪」という電子音を生成して鳴らす関数
+    function playBeep() {
+        if (!audioCtx) return;
+        
+        // 1回目の「ピ」
+        const osc1 = audioCtx.createOscillator();
+        const gain1 = audioCtx.createGain();
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(1000, audioCtx.currentTime); // 1000Hzの高音
+        gain1.gain.setValueAtTime(0.5, audioCtx.currentTime); // 音量
+        osc1.connect(gain1);
+        gain1.connect(audioCtx.destination);
+        osc1.start();
+        osc1.stop(audioCtx.currentTime + 0.1); // 0.1秒鳴らす
+
+        // 2回目の「ピッ」 (0.15秒後に鳴らす)
+        const osc2 = audioCtx.createOscillator();
+        const gain2 = audioCtx.createGain();
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(1200, audioCtx.currentTime + 0.15); // 少し高い音
+        gain2.gain.setValueAtTime(0.5, audioCtx.currentTime + 0.15);
+        osc2.connect(gain2);
+        gain2.connect(audioCtx.destination);
+        osc2.start(audioCtx.currentTime + 0.15);
+        osc2.stop(audioCtx.currentTime + 0.25);
     }
 
     async function initEngines() {
@@ -232,7 +272,6 @@
     function processDetections(items) {
         if (items.length === 0) return;
 
-        // 2つ同時に映っている場合は即座に両方採用
         if (items.length >= 2) {
             if (!firstQR) {
                 firstQR = items[0];
@@ -255,7 +294,6 @@
             }
         }
 
-        // 1つだけ映っている場合（または順番にスキャンしている場合）
         if (items.length === 1) {
             const item = items[0];
             
@@ -264,27 +302,21 @@
                 updateUI();
             } else if (!secondQR) {
                 if (item.text !== firstQR.text) {
-                    // データが違うなら即座に2個目として採用
                     secondQR = item;
                     updateUI();
                 } else {
-                    // ▼▼▼ 改良ポイント：適応型（アダプティブ）しきい値 ▼▼▼
-                    // 1個目の位置からの距離を計算
+                    // ▼▼▼ 改良点：同一データ時の感度を大幅に引き上げ ▼▼▼
                     const dist = getDistance(firstQR.center, item.center);
-                    
-                    // 映っているQRコードの「上部の辺の長さ（ピクセル）」を計算してサイズを把握
                     const qrSize = getDistance(item.points[0], item.points[1]);
                     
-                    // 「画面幅の12%」と「QRコードのサイズの70%」のうち、大きい方をしきい値にする
-                    // これにより、手ブレを無視しつつ、隣のQRには即座に反応できるようになります
-                    const distanceThreshold = Math.max(overlayCanvas.width * 0.12, qrSize * 0.7);
+                    // しきい値を「画面幅の7%」か「QRサイズの30%」のどちらか【小さい方】に設定
+                    // これにより、少しでもカメラを横にずらせば別物とみなされるようになります
+                    const distanceThreshold = Math.min(overlayCanvas.width * 0.07, qrSize * 0.3);
 
                     if (dist > distanceThreshold) {
-                        // しきい値を超えて動いたので、別物（2個目）と判定！
                         secondQR = item;
                         updateUI();
                     } else {
-                        // 距離が近い＝同じQRを見続けているだけなので、枠線を追従させるために位置だけ更新
                         firstQR.points = item.points;
                         firstQR.center = item.center;
                     }
@@ -298,13 +330,30 @@
         if (secondQR) document.getElementById('text2').innerText = secondQR.text;
     }
 
+    function formatResultText(text) {
+        if (/^https?:\/\//i.test(text)) {
+            return `<a href="${text}" target="_blank" rel="noopener noreferrer" style="color: #03DAC6; text-decoration: underline; font-weight: bold;">${text}</a>`;
+        }
+        const div = document.createElement('div');
+        div.innerText = text;
+        return div.innerHTML;
+    }
+
     function showResultScreen() {
+        // ▼▼▼ 追加：2つ揃った瞬間に電子音を鳴らす ▼▼▼
+        playBeep();
+        
+        // Androidなど対応端末ならバイブも鳴らす
+        if (navigator.vibrate) {
+            navigator.vibrate([100, 50, 100]); 
+        }
+
         document.getElementById('cameraContainer').style.display = 'none';
         document.getElementById('statusPanel').style.display = 'none';
         document.getElementById('resultScreen').style.display = 'block';
         
-        document.getElementById('finalText1').innerText = firstQR.text;
-        document.getElementById('finalText2').innerText = secondQR.text;
+        document.getElementById('finalText1').innerHTML = formatResultText(firstQR.text);
+        document.getElementById('finalText2').innerHTML = formatResultText(secondQR.text);
     }
 
     function goBack() {
@@ -340,4 +389,3 @@
 </script>
 </body>
 </html>
-
