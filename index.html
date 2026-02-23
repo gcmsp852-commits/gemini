@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>QRツイン リーダー</title>
+    <script src="https://unpkg.com/@zxing/library@0.21.0/umd/index.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0; padding: 0; background-color: #121212; color: #ffffff; text-align: center;
+        }
+        h2 { margin: 15px 0; font-size: 1.2rem; }
+        
+        /* 各画面のコンテナ */
+        #startScreen, #resultScreen { padding: 20px; margin-top: 50px; }
+        #resultScreen { display: none; }
+
+        .camera-container {
+            position: relative; width: 100%; max-width: 600px; margin: 0 auto; background: #000; display: none;
+        }
+        video { width: 100%; display: block; object-fit: cover; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        .status-panel {
+            padding: 15px; background: #1e1e1e; border-top: 1px solid #333; text-align: left; max-width: 600px; margin: 0 auto; display: none;
+        }
+        
+        .qr-result { margin-bottom: 10px; padding: 10px; border-radius: 8px; background: #2c2c2c; word-break: break-all; }
+        .qr-1 { border-left: 5px solid #00E676; }
+        .qr-2 { border-left: 5px solid #29B6F6; }
+        
+        button {
+            width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; 
+            background: #6200EE; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px;
+        }
+        button:active { background: #3700B3; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        
+        #backBtn { background: #03DAC6; color: #000; margin-top: 30px; }
+        #backBtn:active { background: #018786; }
+    </style>
+</head>
+<body>
+
+    <h2>📱 QRツイン リーダー</h2>
+    
+    <div id="startScreen">
+        <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">
+            2つのQRコードを同時に、または連続して読み取ります。
+        </p>
+        <button id="startBtn" onclick="startApp()">📷 カメラを起動する</button>
+    </div>
+
+    <div class="camera-container" id="cameraContainer">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="overlayCanvas"></canvas>
+    </div>
+
+    <div class="status-panel" id="statusPanel">
+        <div id="detectorInfo" style="font-size: 0.8rem; color: #aaa; margin-bottom: 10px;">読取エンジン準備中...</div>
+        <div class="qr-result qr-1">
+            <strong>1個目:</strong> <span id="text1">未検出</span>
+        </div>
+        <div class="qr-result qr-2">
+            <strong>2個目:</strong> <span id="text2">未検出</span>
+        </div>
+    </div>
+
+    <div id="resultScreen">
+        <h3 style="color: #00E676; margin-bottom: 20px;">✅ 読み取り完了！</h3>
+        <div class="qr-result qr-1" style="text-align: left;">
+            <strong>1個目:</strong><br> <span id="finalText1"></span>
+        </div>
+        <div class="qr-result qr-2" style="text-align: left;">
+            <strong>2個目:</strong><br> <span id="finalText2"></span>
+        </div>
+        <button id="backBtn" onclick="goBack()">🔙 もとのカメラ画面に戻る</button>
+    </div>
+
+<script>
+    const video = document.getElementById('video');
+    const overlayCanvas = document.getElementById('overlayCanvas');
+    const ctx = overlayCanvas.getContext('2d');
+    
+    const zxingCanvas = document.createElement('canvas');
+    const zxingCtx = zxingCanvas.getContext('2d', { willReadFrequently: true });
+
+    let isProcessing = false;
+    let isScanning = false;
+    let lastDetectTime = 0;
+    const SCAN_INTERVAL_MS = 200; 
+    
+    let useNativeDetector = false;
+    let barcodeDetector = null;
+    let zxingMultiReader = null;
+
+    let firstQR = null;
+    let secondQR = null;
+
+    async function startApp() {
+        const startBtn = document.getElementById('startBtn');
+        startBtn.disabled = true;
+        startBtn.innerText = "準備中...";
+
+        await initEngines();
+        const success = await startCamera();
+        
+        if (success) {
+            document.getElementById('startScreen').style.display = 'none';
+            document.getElementById('cameraContainer').style.display = 'block';
+            document.getElementById('statusPanel').style.display = 'block';
+        } else {
+            startBtn.disabled = false;
+            startBtn.innerText = "📷 カメラを起動する";
+        }
+    }
+
+    async function initEngines() {
+        if ('BarcodeDetector' in window) {
+            try {
+                const formats = await BarcodeDetector.getSupportedFormats();
+                if (formats.includes('qr_code')) {
+                    barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+                    useNativeDetector = true;
+                    document.getElementById('detectorInfo').innerText = "⚡ エンジン: BarcodeDetector (爆速・Native)";
+                    return;
+                }
+            } catch (e) {}
+        }
+        
+        if (typeof ZXing !== 'undefined') {
+            zxingMultiReader = new ZXing.qrcode.QRCodeMultiReader();
+            document.getElementById('detectorInfo').innerText = "🐢 エンジン: ZXing (フォールバック)";
+        } else {
+            alert("ZXingライブラリの読み込みに失敗しました。再読み込みしてください。");
+        }
+    }
+
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment' }
+            });
+            video.srcObject = stream;
+            
+            await new Promise((resolve) => {
+                video.onloadedmetadata = resolve;
+                setTimeout(resolve, 1000); 
+            });
+            
+            await video.play().catch(e => console.warn("自動再生ブロック:", e));
+            
+            isScanning = true;
+            requestAnimationFrame(scanLoop);
+            return true;
+        } catch (err) {
+            alert("カメラを起動できませんでした。\n権限を確認してください。\nエラー: " + err.message);
+            return false;
+        }
+    }
+
+    function getCenter(points) {
+        if (!points || points.length === 0) return { x: 0, y: 0 };
+        let sumX = 0, sumY = 0;
+        points.forEach(p => { sumX += p.x; sumY += p.y; });
+        return { x: sumX / points.length, y: sumY / points.length };
+    }
+
+    function getDistance(p1, p2) {
+        return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+    }
+
+    async function scanLoop() {
+        if (!isScanning) return;
+
+        if (video.videoWidth && overlayCanvas.width !== video.videoWidth) {
+            overlayCanvas.width = video.videoWidth;
+            overlayCanvas.height = video.videoHeight;
+        }
+
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+        if (firstQR) drawBoundingBox(firstQR.points, '#00E676');
+        if (secondQR) drawBoundingBox(secondQR.points, '#29B6F6');
+
+        const now = Date.now();
+        if (!isProcessing && now - lastDetectTime > SCAN_INTERVAL_MS && video.readyState >= 2) {
+            isProcessing = true;
+            lastDetectTime = now;
+            let detectedItems = [];
+
+            try {
+                if (useNativeDetector) {
+                    const barcodes = await barcodeDetector.detect(video);
+                    detectedItems = barcodes.map(b => ({
+                        text: b.rawValue,
+                        points: b.cornerPoints,
+                        center: getCenter(b.cornerPoints)
+                    }));
+                } else if (zxingMultiReader) {
+                    zxingCanvas.width = overlayCanvas.width;
+                    zxingCanvas.height = overlayCanvas.height;
+                    zxingCtx.drawImage(video, 0, 0, zxingCanvas.width, zxingCanvas.height);
+                    
+                    const luminanceSource = new ZXing.HTMLCanvasElementLuminanceSource(zxingCanvas);
+                    const binaryBitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(luminanceSource));
+                    const hints = new Map();
+                    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+                    
+                    const results = zxingMultiReader.decodeMultiple(binaryBitmap, hints);
+                    detectedItems = results.map(r => {
+                        const pts = r.getResultPoints().map(p => ({ x: p.getX(), y: p.getY() }));
+                        return { text: r.getText(), points: pts, center: getCenter(pts) };
+                    });
+                }
+            } catch (err) { }
+
+            processDetections(detectedItems);
+            isProcessing = false;
+        }
+
+        if (firstQR && secondQR) {
+            showResultScreen();
+            isScanning = false;
+            return;
+        }
+
+        requestAnimationFrame(scanLoop);
+    }
+
+    function processDetections(items) {
+        if (items.length === 0) return;
+
+        // 2つ同時に映っている場合は即座に両方採用
+        if (items.length >= 2) {
+            if (!firstQR) {
+                firstQR = items[0];
+                secondQR = items[1];
+                updateUI();
+                return;
+            }
+            if (firstQR && !secondQR) {
+                const dist0 = getDistance(firstQR.center, items[0].center);
+                const dist1 = getDistance(firstQR.center, items[1].center);
+                if (dist0 > dist1) {
+                    secondQR = items[0];
+                    firstQR = items[1]; 
+                } else {
+                    secondQR = items[1];
+                    firstQR = items[0]; 
+                }
+                updateUI();
+                return;
+            }
+        }
+
+        // 1つだけ映っている場合（または順番にスキャンしている場合）
+        if (items.length === 1) {
+            const item = items[0];
+            
+            if (!firstQR) {
+                firstQR = item;
+                updateUI();
+            } else if (!secondQR) {
+                if (item.text !== firstQR.text) {
+                    // データが違うなら即座に2個目として採用
+                    secondQR = item;
+                    updateUI();
+                } else {
+                    // ▼▼▼ 改良ポイント：適応型（アダプティブ）しきい値 ▼▼▼
+                    // 1個目の位置からの距離を計算
+                    const dist = getDistance(firstQR.center, item.center);
+                    
+                    // 映っているQRコードの「上部の辺の長さ（ピクセル）」を計算してサイズを把握
+                    const qrSize = getDistance(item.points[0], item.points[1]);
+                    
+                    // 「画面幅の12%」と「QRコードのサイズの70%」のうち、大きい方をしきい値にする
+                    // これにより、手ブレを無視しつつ、隣のQRには即座に反応できるようになります
+                    const distanceThreshold = Math.max(overlayCanvas.width * 0.12, qrSize * 0.7);
+
+                    if (dist > distanceThreshold) {
+                        // しきい値を超えて動いたので、別物（2個目）と判定！
+                        secondQR = item;
+                        updateUI();
+                    } else {
+                        // 距離が近い＝同じQRを見続けているだけなので、枠線を追従させるために位置だけ更新
+                        firstQR.points = item.points;
+                        firstQR.center = item.center;
+                    }
+                }
+            }
+        }
+    }
+
+    function updateUI() {
+        if (firstQR) document.getElementById('text1').innerText = firstQR.text;
+        if (secondQR) document.getElementById('text2').innerText = secondQR.text;
+    }
+
+    function showResultScreen() {
+        document.getElementById('cameraContainer').style.display = 'none';
+        document.getElementById('statusPanel').style.display = 'none';
+        document.getElementById('resultScreen').style.display = 'block';
+        
+        document.getElementById('finalText1').innerText = firstQR.text;
+        document.getElementById('finalText2').innerText = secondQR.text;
+    }
+
+    function goBack() {
+        firstQR = null;
+        secondQR = null;
+        
+        document.getElementById('text1').innerText = "未検出";
+        document.getElementById('text2').innerText = "未検出";
+        
+        document.getElementById('resultScreen').style.display = 'none';
+        document.getElementById('cameraContainer').style.display = 'block';
+        document.getElementById('statusPanel').style.display = 'block';
+        
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        isScanning = true;
+        requestAnimationFrame(scanLoop);
+    }
+
+    function drawBoundingBox(points, color) {
+        if (!points || points.length < 3) return;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+            ctx.lineTo(points[i].x, points[i].y);
+        }
+        ctx.closePath();
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+        ctx.fillStyle = color + '44'; 
+        ctx.fill();
+    }
+</script>
+</body>
+</html>
+
