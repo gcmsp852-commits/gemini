@@ -282,7 +282,7 @@
                     const dist = getDistance(firstQR.center, item.center);
                     const qrSize = getDistance(item.points[0], item.points[1]);
                     
-                    const distanceThreshold = Math.min(overlayCanvas.width * 0.08, qrSize * 0.35);
+                    const distanceThreshold = Math.min(overlayCanvas.width * 0.1, qrSize * 0.45);
 
                     if (dist > distanceThreshold) {
                         secondQR = item;
@@ -356,6 +356,7 @@
 </script>
 </body>
 </html>
+
 
 
 
