@@ -35,8 +35,9 @@
         }
         button:disabled { background: #555; cursor: not-allowed; }
         
-        #startBtn { background: #2196F3; }
-        #startBtn:active { background: #1976D2; }
+        /* ▼▼▼ 変更点：起動ボタンをピンク色に指定 ▼▼▼ */
+        #startBtn { background: #E91E63; } /* マテリアルデザインのピンク */
+        #startBtn:active { background: #C2185B; }
         
         #backBtn { background: #03DAC6; color: #000; margin-top: 30px; }
         #backBtn:active { background: #018786; }
@@ -98,23 +99,11 @@
 
     let firstQR = null;
     let secondQR = null;
-    
-    // Web Audio APIのコンテキスト (音を鳴らすための準備)
-    let audioCtx = null;
 
     async function startApp() {
         const startBtn = document.getElementById('startBtn');
         startBtn.disabled = true;
         startBtn.innerText = "準備中...";
-
-        // ユーザーアクション（ボタンクリック）時にAudioContextを初期化しないとiOSで音が鳴らない
-        if (!audioCtx) {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            audioCtx = new AudioContext();
-        }
-        if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
-        }
 
         await initEngines();
         const success = await startCamera();
@@ -127,33 +116,6 @@
             startBtn.disabled = false;
             startBtn.innerText = "📷 カメラを起動する";
         }
-    }
-
-    // 「ピピッ♪」という電子音を生成して鳴らす関数
-    function playBeep() {
-        if (!audioCtx) return;
-        
-        // 1回目の「ピ」
-        const osc1 = audioCtx.createOscillator();
-        const gain1 = audioCtx.createGain();
-        osc1.type = 'sine';
-        osc1.frequency.setValueAtTime(1000, audioCtx.currentTime); // 1000Hzの高音
-        gain1.gain.setValueAtTime(0.5, audioCtx.currentTime); // 音量
-        osc1.connect(gain1);
-        gain1.connect(audioCtx.destination);
-        osc1.start();
-        osc1.stop(audioCtx.currentTime + 0.1); // 0.1秒鳴らす
-
-        // 2回目の「ピッ」 (0.15秒後に鳴らす)
-        const osc2 = audioCtx.createOscillator();
-        const gain2 = audioCtx.createGain();
-        osc2.type = 'sine';
-        osc2.frequency.setValueAtTime(1200, audioCtx.currentTime + 0.15); // 少し高い音
-        gain2.gain.setValueAtTime(0.5, audioCtx.currentTime + 0.15);
-        osc2.connect(gain2);
-        gain2.connect(audioCtx.destination);
-        osc2.start(audioCtx.currentTime + 0.15);
-        osc2.stop(audioCtx.currentTime + 0.25);
     }
 
     async function initEngines() {
@@ -305,12 +267,9 @@
                     secondQR = item;
                     updateUI();
                 } else {
-                    // ▼▼▼ 改良点：同一データ時の感度を大幅に引き上げ ▼▼▼
                     const dist = getDistance(firstQR.center, item.center);
                     const qrSize = getDistance(item.points[0], item.points[1]);
                     
-                    // しきい値を「画面幅の7%」か「QRサイズの30%」のどちらか【小さい方】に設定
-                    // これにより、少しでもカメラを横にずらせば別物とみなされるようになります
                     const distanceThreshold = Math.min(overlayCanvas.width * 0.07, qrSize * 0.3);
 
                     if (dist > distanceThreshold) {
@@ -340,12 +299,9 @@
     }
 
     function showResultScreen() {
-        // ▼▼▼ 追加：2つ揃った瞬間に電子音を鳴らす ▼▼▼
-        playBeep();
-        
-        // Androidなど対応端末ならバイブも鳴らす
+        // ▼▼▼ 変更点：音を削除し、バイブレーションを短く（40ms）して控えめに変更 ▼▼▼
         if (navigator.vibrate) {
-            navigator.vibrate([100, 50, 100]); 
+            navigator.vibrate([40, 30, 40]); 
         }
 
         document.getElementById('cameraContainer').style.display = 'none';
